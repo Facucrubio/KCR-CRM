@@ -1,6 +1,5 @@
+import { supabase } from "./lib/supabase";
 import type { CRMState, Client, Opportunity, OpportunityStage } from "./types";
-
-const STORAGE_KEY = "kcr-crm-state";
 
 type ViewName =
   | "home"
@@ -21,6 +20,33 @@ interface UIState {
   opportunityStageFilter: string;
   showNewClientForm: boolean;
   showNewOpportunityForm: boolean;
+  isSaving: boolean;
+  feedback: string;
+  error: string;
+}
+
+interface ClientRow {
+  id: string;
+  name: string;
+  company: string;
+  email: string;
+  phone: string | null;
+  position: string | null;
+  source: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+interface OpportunityRow {
+  id: string;
+  client_id: string;
+  title: string;
+  stage: OpportunityStage;
+  amount: number | string;
+  expected_close_date: string | null;
+  owner: string;
+  notes: string | null;
+  created_at: string;
 }
 
 const stageMeta: Record<
@@ -35,20 +61,22 @@ const stageMeta: Record<
   lost: { label: "Perdida", tone: "red", probability: 0 }
 };
 
-export function createApp(root: HTMLDivElement): void {
-  let state = normalizeState(loadState());
+export async function createApp(root: HTMLDivElement): Promise<void> {
+  let state: CRMState = { clients: [], opportunities: [] };
   let ui: UIState = {
     view: { name: "home" },
     clientSearch: "",
     opportunitySearch: "",
     opportunityStageFilter: "all",
     showNewClientForm: false,
-    showNewOpportunityForm: false
+    showNewOpportunityForm: false,
+    isSaving: false,
+    feedback: "",
+    error: ""
   };
 
   const setState = (nextState: CRMState) => {
     state = normalizeState(nextState);
-    persistState(state);
     render();
   };
 
@@ -62,7 +90,9 @@ export function createApp(root: HTMLDivElement): void {
       ...ui,
       view,
       showNewClientForm: false,
-      showNewOpportunityForm: false
+      showNewOpportunityForm: false,
+      feedback: "",
+      error: ""
     };
     render();
   };
@@ -72,7 +102,136 @@ export function createApp(root: HTMLDivElement): void {
     bindNavigation(root, state, ui, setState, setUI, navigate);
   };
 
-  render();
+  root.innerHTML = buildLoadingState("Cargando datos desde Supabase...");
+
+  try {
+    state = await fetchState();
+    render();
+  } catch (error) {
+    root.innerHTML = buildLoadingState(
+      `No pudimos cargar Supabase. ${formatError(error)}`
+    );
+  }
+}
+
+async function fetchState(): Promise<CRMState> {
+  const [clientsResult, opportunitiesResult] = await Promise.all([
+    supabase.from("clients").select("*").order("created_at", { ascending: false }),
+    supabase
+      .from("opportunities")
+      .select("*")
+      .order("created_at", { ascending: false })
+  ]);
+
+  if (clientsResult.error) {
+    throw clientsResult.error;
+  }
+
+  if (opportunitiesResult.error) {
+    throw opportunitiesResult.error;
+  }
+
+  return normalizeState({
+    clients: (clientsResult.data ?? []).map(mapClientRow),
+    opportunities: (opportunitiesResult.data ?? []).map(mapOpportunityRow)
+  });
+}
+
+async function withMutation(
+  setUI: (state: Partial<UIState>) => void,
+  task: () => Promise<void>
+): Promise<void> {
+  setUI({ isSaving: true, error: "", feedback: "" });
+  try {
+    await task();
+    setUI({ isSaving: false, feedback: "Cambios guardados en Supabase." });
+  } catch (error) {
+    setUI({
+      isSaving: false,
+      error: formatError(error),
+      feedback: ""
+    });
+  }
+}
+
+function buildLoadingState(message: string): string {
+  return `
+    <main class="shell">
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Supabase</span>
+            <h2>Estado de conexion</h2>
+          </div>
+          <p>${escapeHtml(message)}</p>
+        </div>
+      </section>
+    </main>
+  `;
+}
+
+function mapClientRow(row: ClientRow): Client {
+  return {
+    id: row.id,
+    name: row.name,
+    company: row.company,
+    email: row.email,
+    phone: row.phone ?? "",
+    position: row.position ?? "",
+    source: row.source ?? "",
+    notes: row.notes ?? "",
+    createdAt: row.created_at
+  };
+}
+
+function mapOpportunityRow(row: OpportunityRow): Opportunity {
+  return {
+    id: row.id,
+    clientId: row.client_id,
+    title: row.title,
+    stage: row.stage,
+    amount: Number(row.amount),
+    expectedCloseDate: row.expected_close_date ?? "",
+    owner: row.owner,
+    notes: row.notes ?? "",
+    createdAt: row.created_at
+  };
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Ocurrio un error inesperado.";
+}
+
+function toNullable(value: string): string | null {
+  return value || null;
+}
+
+function buildClientPayload(formData: FormData) {
+  return {
+    name: readString(formData, "name"),
+    company: readString(formData, "company"),
+    email: readString(formData, "email"),
+    phone: toNullable(readString(formData, "phone")),
+    position: toNullable(readString(formData, "position")),
+    source: toNullable(readString(formData, "source")),
+    notes: toNullable(readString(formData, "notes"))
+  };
+}
+
+function buildOpportunityPayload(formData: FormData) {
+  return {
+    client_id: readString(formData, "clientId"),
+    title: readString(formData, "title"),
+    stage: readStage(formData, "stage"),
+    amount: readNumber(formData, "amount"),
+    expected_close_date: toNullable(readString(formData, "expectedCloseDate")),
+    owner: readString(formData, "owner"),
+    notes: toNullable(readString(formData, "notes"))
+  };
 }
 
 function bindNavigation(
@@ -159,33 +318,67 @@ function bindNavigation(
       );
     });
 
-  bindCreateForms(root, state, setState, navigate);
-  bindDetailForms(root, state, setState, navigate);
+  bindCreateForms(root, state, ui, setState, setUI, navigate);
+  bindDetailForms(root, state, ui, setState, setUI, navigate);
 }
 
 function bindCreateForms(
   root: HTMLDivElement,
   state: CRMState,
+  ui: UIState,
   setState: (state: CRMState) => void,
+  setUI: (state: Partial<UIState>) => void,
   navigate: (view: AppView) => void
 ): void {
   const clientForm = root.querySelector<HTMLFormElement>("#new-client-form");
-  clientForm?.addEventListener("submit", (event) => {
+  clientForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const client = buildClientFromForm(new FormData(clientForm));
-    setState({ ...state, clients: [client, ...state.clients] });
-    navigate({ name: "clientDetail", id: client.id });
+    if (ui.isSaving) {
+      return;
+    }
+
+    await withMutation(setUI, async () => {
+      const { data, error } = await supabase
+        .from("clients")
+        .insert(buildClientPayload(new FormData(clientForm)))
+        .select("*")
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      const client = mapClientRow(data as ClientRow);
+      setState({ ...state, clients: [client, ...state.clients] });
+      navigate({ name: "clientDetail", id: client.id });
+    });
   });
 
   const opportunityForm = root.querySelector<HTMLFormElement>("#new-opportunity-form");
-  opportunityForm?.addEventListener("submit", (event) => {
+  opportunityForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const opportunity = buildOpportunityFromForm(new FormData(opportunityForm));
-    setState({
-      ...state,
-      opportunities: [opportunity, ...state.opportunities]
+    if (ui.isSaving) {
+      return;
+    }
+
+    await withMutation(setUI, async () => {
+      const { data, error } = await supabase
+        .from("opportunities")
+        .insert(buildOpportunityPayload(new FormData(opportunityForm)))
+        .select("*")
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      const opportunity = mapOpportunityRow(data as OpportunityRow);
+      setState({
+        ...state,
+        opportunities: [opportunity, ...state.opportunities]
+      });
+      navigate({ name: "opportunityDetail", id: opportunity.id });
     });
-    navigate({ name: "opportunityDetail", id: opportunity.id });
   });
 }
 
@@ -237,12 +430,18 @@ function updateOpportunityList(
 function bindDetailForms(
   root: HTMLDivElement,
   state: CRMState,
+  ui: UIState,
   setState: (state: CRMState) => void,
+  setUI: (state: Partial<UIState>) => void,
   navigate: (view: AppView) => void
 ): void {
   const clientDetailForm = root.querySelector<HTMLFormElement>("#client-detail-form");
-  clientDetailForm?.addEventListener("submit", (event) => {
+  clientDetailForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (ui.isSaving) {
+      return;
+    }
+
     const formData = new FormData(clientDetailForm);
     const clientId = readString(formData, "id");
     const current = state.clients.find((item) => item.id === clientId);
@@ -250,42 +449,61 @@ function bindDetailForms(
       return;
     }
 
-    const next: Client = {
-      ...current,
-      name: readString(formData, "name"),
-      company: readString(formData, "company"),
-      email: readString(formData, "email"),
-      phone: readString(formData, "phone"),
-      position: readString(formData, "position"),
-      source: readString(formData, "source"),
-      notes: readString(formData, "notes")
-    };
+    await withMutation(setUI, async () => {
+      const { data, error } = await supabase
+        .from("clients")
+        .update(buildClientPayload(formData))
+        .eq("id", clientId)
+        .select("*")
+        .single();
 
-    setState({
-      ...state,
-      clients: state.clients.map((item) => (item.id === clientId ? next : item))
+      if (error) {
+        throw error;
+      }
+
+      const next = mapClientRow(data as ClientRow);
+      setState({
+        ...state,
+        clients: state.clients.map((item) => (item.id === clientId ? next : item))
+      });
+      navigate({ name: "clientDetail", id: clientId });
     });
-    navigate({ name: "clientDetail", id: clientId });
   });
   
-  root.querySelector<HTMLElement>("[data-delete-client]")?.addEventListener("click", () => {
+  root.querySelector<HTMLElement>("[data-delete-client]")?.addEventListener("click", async () => {
+    if (ui.isSaving) {
+      return;
+    }
+
     const id = root.querySelector<HTMLElement>("[data-delete-client]")?.dataset.deleteClient;
     if (!id) {
       return;
     }
 
-    setState({
-      clients: state.clients.filter((item) => item.id !== id),
-      opportunities: state.opportunities.filter((item) => item.clientId !== id)
+    await withMutation(setUI, async () => {
+      const { error } = await supabase.from("clients").delete().eq("id", id);
+
+      if (error) {
+        throw error;
+      }
+
+      setState({
+        clients: state.clients.filter((item) => item.id !== id),
+        opportunities: state.opportunities.filter((item) => item.clientId !== id)
+      });
+      navigate({ name: "clients" });
     });
-    navigate({ name: "clients" });
   });
 
   const opportunityDetailForm = root.querySelector<HTMLFormElement>(
     "#opportunity-detail-form"
   );
-  opportunityDetailForm?.addEventListener("submit", (event) => {
+  opportunityDetailForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (ui.isSaving) {
+      return;
+    }
+
     const formData = new FormData(opportunityDetailForm);
     const opportunityId = readString(formData, "id");
     const current = state.opportunities.find((item) => item.id === opportunityId);
@@ -293,29 +511,36 @@ function bindDetailForms(
       return;
     }
 
-    const next: Opportunity = {
-      ...current,
-      clientId: readString(formData, "clientId"),
-      title: readString(formData, "title"),
-      stage: readStage(formData, "stage"),
-      amount: readNumber(formData, "amount"),
-      expectedCloseDate: readString(formData, "expectedCloseDate"),
-      owner: readString(formData, "owner"),
-      notes: readString(formData, "notes")
-    };
+    await withMutation(setUI, async () => {
+      const { data, error } = await supabase
+        .from("opportunities")
+        .update(buildOpportunityPayload(formData))
+        .eq("id", opportunityId)
+        .select("*")
+        .single();
 
-    setState({
-      ...state,
-      opportunities: state.opportunities.map((item) =>
-        item.id === opportunityId ? next : item
-      )
+      if (error) {
+        throw error;
+      }
+
+      const next = mapOpportunityRow(data as OpportunityRow);
+      setState({
+        ...state,
+        opportunities: state.opportunities.map((item) =>
+          item.id === opportunityId ? next : item
+        )
+      });
+      navigate({ name: "opportunityDetail", id: opportunityId });
     });
-    navigate({ name: "opportunityDetail", id: opportunityId });
   });
 
   root
     .querySelector<HTMLElement>("[data-delete-opportunity]")
-    ?.addEventListener("click", () => {
+    ?.addEventListener("click", async () => {
+      if (ui.isSaving) {
+        return;
+      }
+
       const id = root.querySelector<HTMLElement>(
         "[data-delete-opportunity]"
       )?.dataset.deleteOpportunity;
@@ -323,11 +548,19 @@ function bindDetailForms(
         return;
       }
 
-      setState({
-        ...state,
-        opportunities: state.opportunities.filter((item) => item.id !== id)
+      await withMutation(setUI, async () => {
+        const { error } = await supabase.from("opportunities").delete().eq("id", id);
+
+        if (error) {
+          throw error;
+        }
+
+        setState({
+          ...state,
+          opportunities: state.opportunities.filter((item) => item.id !== id)
+        });
+        navigate({ name: "opportunities" });
       });
-      navigate({ name: "opportunities" });
     });
 }
 
@@ -335,9 +568,31 @@ function buildLayout(state: CRMState, ui: UIState): string {
   return `
     <main class="shell">
       ${buildHero(state)}
+      ${buildFeedback(ui)}
       ${buildTabs(ui.view)}
       ${buildCurrentView(state, ui)}
     </main>
+  `;
+}
+
+function buildFeedback(ui: UIState): string {
+  if (!ui.isSaving && !ui.feedback && !ui.error) {
+    return "";
+  }
+
+  const title = ui.error ? "Error de sincronizacion" : ui.isSaving ? "Guardando" : "Supabase";
+  const message = ui.error || ui.feedback || "Guardando cambios en Supabase...";
+
+  return `
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Estado</span>
+          <h2>${escapeHtml(title)}</h2>
+        </div>
+        <p>${escapeHtml(message)}</p>
+      </div>
+    </section>
   `;
 }
 
@@ -991,112 +1246,11 @@ function renderRelatedOpportunity(opportunity: Opportunity): string {
   `;
 }
 
-function buildClientFromForm(formData: FormData): Client {
-  return {
-    id: crypto.randomUUID(),
-    name: readString(formData, "name"),
-    company: readString(formData, "company"),
-    email: readString(formData, "email"),
-    phone: readString(formData, "phone"),
-    position: readString(formData, "position"),
-    source: readString(formData, "source"),
-    notes: readString(formData, "notes"),
-    createdAt: new Date().toISOString()
-  };
-}
-
-function buildOpportunityFromForm(formData: FormData): Opportunity {
-  return {
-    id: crypto.randomUUID(),
-    clientId: readString(formData, "clientId"),
-    title: readString(formData, "title"),
-    stage: readStage(formData, "stage"),
-    amount: readNumber(formData, "amount"),
-    expectedCloseDate: readString(formData, "expectedCloseDate"),
-    owner: readString(formData, "owner"),
-    notes: readString(formData, "notes"),
-    createdAt: new Date().toISOString()
-  };
-}
-
-function loadState(): CRMState {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return buildSeedState();
-  }
-
-  try {
-    return normalizeState(JSON.parse(raw) as CRMState);
-  } catch {
-    return buildSeedState();
-  }
-}
-
-function persistState(state: CRMState): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
 function normalizeState(state: CRMState): CRMState {
   return {
     clients: [...state.clients].sort(sortByDateDesc),
     opportunities: [...state.opportunities].sort(sortByDateDesc)
   };
-}
-
-function buildSeedState(): CRMState {
-  const clientAId = crypto.randomUUID();
-  const clientBId = crypto.randomUUID();
-
-  return normalizeState({
-    clients: [
-      {
-        id: clientAId,
-        name: "Mariana Torres",
-        company: "Logistica Atlas",
-        email: "mariana@atlas.com",
-        phone: "+54 11 4000 1234",
-        position: "Gerente Comercial",
-        source: "Referido",
-        notes: "Busca ordenar el seguimiento de leads del equipo.",
-        createdAt: "2026-03-01T10:00:00.000Z"
-      },
-      {
-        id: clientBId,
-        name: "Santiago Ruiz",
-        company: "Industrias Norte",
-        email: "sruiz@norte.com",
-        phone: "+54 351 555 9898",
-        position: "Director General",
-        source: "LinkedIn",
-        notes: "Interesado en tableros de pipeline y trazabilidad.",
-        createdAt: "2026-03-12T14:30:00.000Z"
-      }
-    ],
-    opportunities: [
-      {
-        id: crypto.randomUUID(),
-        clientId: clientAId,
-        title: "CRM para equipo de ventas",
-        stage: "proposal",
-        amount: 4800,
-        expectedCloseDate: "2026-04-20",
-        owner: "Carla",
-        notes: "Enviar propuesta final con onboarding incluido.",
-        createdAt: "2026-03-15T09:00:00.000Z"
-      },
-      {
-        id: crypto.randomUUID(),
-        clientId: clientBId,
-        title: "Automatizacion de seguimiento",
-        stage: "negotiation",
-        amount: 9200,
-        expectedCloseDate: "2026-04-10",
-        owner: "Diego",
-        notes: "Pendiente validacion del alcance tecnico.",
-        createdAt: "2026-03-18T16:00:00.000Z"
-      }
-    ]
-  });
 }
 
 function totalOpenPipeline(state: CRMState): number {

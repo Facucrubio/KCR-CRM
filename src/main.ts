@@ -7,5 +7,4 @@ if (!root) {
   throw new Error("No se encontro el contenedor principal.");
 }
 
-createApp(root);
-
+void createApp(root);
