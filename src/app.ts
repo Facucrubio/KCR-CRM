@@ -1,10 +1,18 @@
 import { supabase } from "./lib/supabase";
-import type { CRMState, Client, Opportunity, OpportunityStage } from "./types";
+import type {
+  CRMState,
+  Client,
+  Opportunity,
+  OpportunityStage,
+  Seller
+} from "./types";
 
 type ViewName =
   | "home"
   | "clients"
   | "clientDetail"
+  | "sellers"
+  | "sellerDetail"
   | "opportunities"
   | "opportunityDetail";
 
@@ -16,9 +24,11 @@ interface AppView {
 interface UIState {
   view: AppView;
   clientSearch: string;
+  sellerSearch: string;
   opportunitySearch: string;
   opportunityStageFilter: string;
   showNewClientForm: boolean;
+  showNewSellerForm: boolean;
   showNewOpportunityForm: boolean;
   isSaving: boolean;
   feedback: string;
@@ -29,10 +39,20 @@ interface ClientRow {
   id: string;
   name: string;
   company: string;
-  email: string;
+  email: string | null;
   phone: string | null;
   position: string | null;
   source: string | null;
+  social_networks: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+interface SellerRow {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
   notes: string | null;
   created_at: string;
 }
@@ -40,11 +60,12 @@ interface ClientRow {
 interface OpportunityRow {
   id: string;
   client_id: string;
+  seller_id: string | null;
   title: string;
   stage: OpportunityStage;
   amount: number | string;
   expected_close_date: string | null;
-  owner: string;
+  owner: string | null;
   notes: string | null;
   created_at: string;
 }
@@ -62,13 +83,15 @@ const stageMeta: Record<
 };
 
 export async function createApp(root: HTMLDivElement): Promise<void> {
-  let state: CRMState = { clients: [], opportunities: [] };
+  let state: CRMState = { clients: [], sellers: [], opportunities: [] };
   let ui: UIState = {
     view: { name: "home" },
     clientSearch: "",
+    sellerSearch: "",
     opportunitySearch: "",
     opportunityStageFilter: "all",
     showNewClientForm: false,
+    showNewSellerForm: false,
     showNewOpportunityForm: false,
     isSaving: false,
     feedback: "",
@@ -90,6 +113,7 @@ export async function createApp(root: HTMLDivElement): Promise<void> {
       ...ui,
       view,
       showNewClientForm: false,
+      showNewSellerForm: false,
       showNewOpportunityForm: false,
       feedback: "",
       error: ""
@@ -106,17 +130,17 @@ export async function createApp(root: HTMLDivElement): Promise<void> {
 
   try {
     state = await fetchState();
-    render();
   } catch (error) {
-    root.innerHTML = buildLoadingState(
-      `No pudimos cargar Supabase. ${formatError(error)}`
-    );
+    ui.error = `No pudimos cargar Supabase. ${formatError(error)}`;
   }
+
+  render();
 }
 
 async function fetchState(): Promise<CRMState> {
-  const [clientsResult, opportunitiesResult] = await Promise.all([
+  const [clientsResult, sellersResult, opportunitiesResult] = await Promise.all([
     supabase.from("clients").select("*").order("created_at", { ascending: false }),
+    supabase.from("sellers").select("*").order("created_at", { ascending: false }),
     supabase
       .from("opportunities")
       .select("*")
@@ -127,14 +151,29 @@ async function fetchState(): Promise<CRMState> {
     throw clientsResult.error;
   }
 
+  if (sellersResult.error) {
+    throw sellersResult.error;
+  }
+
   if (opportunitiesResult.error) {
     throw opportunitiesResult.error;
   }
 
   return normalizeState({
     clients: (clientsResult.data ?? []).map(mapClientRow),
+    sellers: (sellersResult.data ?? []).map(mapSellerRow),
     opportunities: (opportunitiesResult.data ?? []).map(mapOpportunityRow)
   });
+}
+
+async function refreshState(
+  setState: (state: CRMState) => void,
+  setUI: (state: Partial<UIState>) => void
+): Promise<CRMState> {
+  const nextState = await fetchState();
+  setState(nextState);
+  setUI({ error: "" });
+  return nextState;
 }
 
 async function withMutation(
@@ -175,10 +214,22 @@ function mapClientRow(row: ClientRow): Client {
     id: row.id,
     name: row.name,
     company: row.company,
-    email: row.email,
+    email: row.email ?? "",
     phone: row.phone ?? "",
     position: row.position ?? "",
     source: row.source ?? "",
+    socialNetworks: row.social_networks ?? "",
+    notes: row.notes ?? "",
+    createdAt: row.created_at
+  };
+}
+
+function mapSellerRow(row: SellerRow): Seller {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email ?? "",
+    phone: row.phone ?? "",
     notes: row.notes ?? "",
     createdAt: row.created_at
   };
@@ -188,11 +239,12 @@ function mapOpportunityRow(row: OpportunityRow): Opportunity {
   return {
     id: row.id,
     clientId: row.client_id,
+    sellerId: row.seller_id ?? "",
     title: row.title,
     stage: row.stage,
     amount: Number(row.amount),
     expectedCloseDate: row.expected_close_date ?? "",
-    owner: row.owner,
+    owner: row.owner ?? "",
     notes: row.notes ?? "",
     createdAt: row.created_at
   };
@@ -214,22 +266,36 @@ function buildClientPayload(formData: FormData) {
   return {
     name: readString(formData, "name"),
     company: readString(formData, "company"),
-    email: readString(formData, "email"),
+    email: toNullable(readString(formData, "email")),
     phone: toNullable(readString(formData, "phone")),
     position: toNullable(readString(formData, "position")),
     source: toNullable(readString(formData, "source")),
+    social_networks: toNullable(readString(formData, "socialNetworks")),
     notes: toNullable(readString(formData, "notes"))
   };
 }
 
-function buildOpportunityPayload(formData: FormData) {
+function buildSellerPayload(formData: FormData) {
+  return {
+    name: readString(formData, "name"),
+    email: toNullable(readString(formData, "email")),
+    phone: toNullable(readString(formData, "phone")),
+    notes: toNullable(readString(formData, "notes"))
+  };
+}
+
+function buildOpportunityPayload(formData: FormData, sellers: Seller[]) {
+  const sellerId = readString(formData, "sellerId");
+  const seller = sellers.find((item) => item.id === sellerId);
+
   return {
     client_id: readString(formData, "clientId"),
+    seller_id: sellerId,
     title: readString(formData, "title"),
     stage: readStage(formData, "stage"),
     amount: readNumber(formData, "amount"),
     expected_close_date: toNullable(readString(formData, "expectedCloseDate")),
-    owner: readString(formData, "owner"),
+    owner: seller?.name ?? readString(formData, "owner"),
     notes: toNullable(readString(formData, "notes"))
   };
 }
@@ -260,6 +326,15 @@ function bindNavigation(
     });
   });
 
+  root.querySelectorAll<HTMLElement>("[data-open-seller]").forEach((element) => {
+    element.addEventListener("click", () => {
+      const id = element.dataset.openSeller;
+      if (id) {
+        navigate({ name: "sellerDetail", id });
+      }
+    });
+  });
+
   root.querySelectorAll<HTMLElement>("[data-open-opportunity]").forEach((element) => {
     element.addEventListener("click", () => {
       const id = element.dataset.openOpportunity;
@@ -272,6 +347,15 @@ function bindNavigation(
   root.querySelector<HTMLElement>("[data-toggle-new-client]")?.addEventListener("click", () => {
     setUI({
       showNewClientForm: !ui.showNewClientForm,
+      showNewSellerForm: false,
+      showNewOpportunityForm: false
+    });
+  });
+
+  root.querySelector<HTMLElement>("[data-toggle-new-seller]")?.addEventListener("click", () => {
+    setUI({
+      showNewClientForm: false,
+      showNewSellerForm: !ui.showNewSellerForm,
       showNewOpportunityForm: false
     });
   });
@@ -280,6 +364,7 @@ function bindNavigation(
     .querySelector<HTMLElement>("[data-toggle-new-opportunity]")
     ?.addEventListener("click", () => {
       setUI({
+        showNewSellerForm: false,
         showNewOpportunityForm: !ui.showNewOpportunityForm,
         showNewClientForm: false
       });
@@ -288,6 +373,11 @@ function bindNavigation(
   root.querySelector<HTMLInputElement>("#client-search")?.addEventListener("input", (event) => {
     ui.clientSearch = (event.currentTarget as HTMLInputElement).value.trim().toLowerCase();
     updateClientList(root, state, ui.clientSearch, navigate);
+  });
+
+  root.querySelector<HTMLInputElement>("#seller-search")?.addEventListener("input", (event) => {
+    ui.sellerSearch = (event.currentTarget as HTMLInputElement).value.trim().toLowerCase();
+    updateSellerList(root, state, ui.sellerSearch, navigate);
   });
 
   root
@@ -338,19 +428,43 @@ function bindCreateForms(
     }
 
     await withMutation(setUI, async () => {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from("clients")
-        .insert(buildClientPayload(new FormData(clientForm)))
-        .select("*")
-        .single();
+        .insert(buildClientPayload(new FormData(clientForm)));
 
       if (error) {
         throw error;
       }
 
-      const client = mapClientRow(data as ClientRow);
-      setState({ ...state, clients: [client, ...state.clients] });
-      navigate({ name: "clientDetail", id: client.id });
+      const nextState = await refreshState(setState, setUI);
+      const client = nextState.clients[0];
+      if (client) {
+        navigate({ name: "clientDetail", id: client.id });
+      }
+    });
+  });
+
+  const sellerForm = root.querySelector<HTMLFormElement>("#new-seller-form");
+  sellerForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (ui.isSaving) {
+      return;
+    }
+
+    await withMutation(setUI, async () => {
+      const { error } = await supabase
+        .from("sellers")
+        .insert(buildSellerPayload(new FormData(sellerForm)));
+
+      if (error) {
+        throw error;
+      }
+
+      const nextState = await refreshState(setState, setUI);
+      const seller = nextState.sellers[0];
+      if (seller) {
+        navigate({ name: "sellerDetail", id: seller.id });
+      }
     });
   });
 
@@ -362,22 +476,19 @@ function bindCreateForms(
     }
 
     await withMutation(setUI, async () => {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from("opportunities")
-        .insert(buildOpportunityPayload(new FormData(opportunityForm)))
-        .select("*")
-        .single();
+        .insert(buildOpportunityPayload(new FormData(opportunityForm), state.sellers));
 
       if (error) {
         throw error;
       }
 
-      const opportunity = mapOpportunityRow(data as OpportunityRow);
-      setState({
-        ...state,
-        opportunities: [opportunity, ...state.opportunities]
-      });
-      navigate({ name: "opportunityDetail", id: opportunity.id });
+      const nextState = await refreshState(setState, setUI);
+      const opportunity = nextState.opportunities[0];
+      if (opportunity) {
+        navigate({ name: "opportunityDetail", id: opportunity.id });
+      }
     });
   });
 }
@@ -399,6 +510,28 @@ function updateClientList(
       const id = element.dataset.openClient;
       if (id) {
         navigate({ name: "clientDetail", id });
+      }
+    });
+  });
+}
+
+function updateSellerList(
+  root: HTMLDivElement,
+  state: CRMState,
+  search: string,
+  navigate: (view: AppView) => void
+): void {
+  const container = root.querySelector<HTMLElement>("[data-seller-list]");
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = renderSellerList(state, search);
+  root.querySelectorAll<HTMLElement>("[data-open-seller]").forEach((element) => {
+    element.addEventListener("click", () => {
+      const id = element.dataset.openSeller;
+      if (id) {
+        navigate({ name: "sellerDetail", id });
       }
     });
   });
@@ -450,22 +583,16 @@ function bindDetailForms(
     }
 
     await withMutation(setUI, async () => {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from("clients")
         .update(buildClientPayload(formData))
-        .eq("id", clientId)
-        .select("*")
-        .single();
+        .eq("id", clientId);
 
       if (error) {
         throw error;
       }
 
-      const next = mapClientRow(data as ClientRow);
-      setState({
-        ...state,
-        clients: state.clients.map((item) => (item.id === clientId ? next : item))
-      });
+      await refreshState(setState, setUI);
       navigate({ name: "clientDetail", id: clientId });
     });
   });
@@ -487,11 +614,59 @@ function bindDetailForms(
         throw error;
       }
 
-      setState({
-        clients: state.clients.filter((item) => item.id !== id),
-        opportunities: state.opportunities.filter((item) => item.clientId !== id)
-      });
+      await refreshState(setState, setUI);
       navigate({ name: "clients" });
+    });
+  });
+
+  const sellerDetailForm = root.querySelector<HTMLFormElement>("#seller-detail-form");
+  sellerDetailForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (ui.isSaving) {
+      return;
+    }
+
+    const formData = new FormData(sellerDetailForm);
+    const sellerId = readString(formData, "id");
+    const current = state.sellers.find((item) => item.id === sellerId);
+    if (!current) {
+      return;
+    }
+
+    await withMutation(setUI, async () => {
+      const { error } = await supabase
+        .from("sellers")
+        .update(buildSellerPayload(formData))
+        .eq("id", sellerId);
+
+      if (error) {
+        throw error;
+      }
+
+      await refreshState(setState, setUI);
+      navigate({ name: "sellerDetail", id: sellerId });
+    });
+  });
+
+  root.querySelector<HTMLElement>("[data-delete-seller]")?.addEventListener("click", async () => {
+    if (ui.isSaving) {
+      return;
+    }
+
+    const id = root.querySelector<HTMLElement>("[data-delete-seller]")?.dataset.deleteSeller;
+    if (!id) {
+      return;
+    }
+
+    await withMutation(setUI, async () => {
+      const { error } = await supabase.from("sellers").delete().eq("id", id);
+
+      if (error) {
+        throw error;
+      }
+
+      await refreshState(setState, setUI);
+      navigate({ name: "sellers" });
     });
   });
 
@@ -512,24 +687,16 @@ function bindDetailForms(
     }
 
     await withMutation(setUI, async () => {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from("opportunities")
-        .update(buildOpportunityPayload(formData))
-        .eq("id", opportunityId)
-        .select("*")
-        .single();
+        .update(buildOpportunityPayload(formData, state.sellers))
+        .eq("id", opportunityId);
 
       if (error) {
         throw error;
       }
 
-      const next = mapOpportunityRow(data as OpportunityRow);
-      setState({
-        ...state,
-        opportunities: state.opportunities.map((item) =>
-          item.id === opportunityId ? next : item
-        )
-      });
+      await refreshState(setState, setUI);
       navigate({ name: "opportunityDetail", id: opportunityId });
     });
   });
@@ -555,10 +722,7 @@ function bindDetailForms(
           throw error;
         }
 
-        setState({
-          ...state,
-          opportunities: state.opportunities.filter((item) => item.id !== id)
-        });
+        await refreshState(setState, setUI);
         navigate({ name: "opportunities" });
       });
     });
@@ -598,27 +762,28 @@ function buildFeedback(ui: UIState): string {
 
 function buildHero(state: CRMState): string {
   return `
-    <section class="hero">
+    <section class="hero hero--compact">
       <div class="hero-copy">
         <span class="eyebrow">CRM interno</span>
-        <h1>Seguimiento comercial con foco, contexto y menos ruido visual.</h1>
-        <p>
-          La portada se concentra en lectura rapida del pipeline. La gestion vive
-          en Clientes y Oportunidades.
-        </p>
+        <h1>Seguimiento comercial claro y accionable.</h1>
+        <p>La portada resume el pipeline. La gestion vive en Clientes, Vendedores y Oportunidades.</p>
       </div>
       <div class="hero-card">
         <p class="hero-card__label">Pipeline activo</p>
         <strong>${formatCurrency(totalOpenPipeline(state))}</strong>
         <span>${countOpenOpportunities(state)} oportunidades abiertas</span>
+        <span>${state.clients.length} clientes y ${state.sellers.length} vendedores activos</span>
       </div>
     </section>
   `;
 }
 
 function buildTabs(view: AppView): string {
-  const isActive = (tab: "home" | "clients" | "opportunities") => {
+  const isActive = (tab: "home" | "clients" | "sellers" | "opportunities") => {
     if (tab === "clients" && view.name === "clientDetail") {
+      return "tab-button--active";
+    }
+    if (tab === "sellers" && view.name === "sellerDetail") {
       return "tab-button--active";
     }
     if (tab === "opportunities" && view.name === "opportunityDetail") {
@@ -631,6 +796,7 @@ function buildTabs(view: AppView): string {
     <nav class="tabs card">
       <button type="button" class="tab-button ${isActive("home")}" data-view="home">Inicio</button>
       <button type="button" class="tab-button ${isActive("clients")}" data-view="clients">Clientes</button>
+      <button type="button" class="tab-button ${isActive("sellers")}" data-view="sellers">Vendedores</button>
       <button type="button" class="tab-button ${isActive("opportunities")}" data-view="opportunities">Oportunidades</button>
     </nav>
   `;
@@ -642,6 +808,10 @@ function buildCurrentView(state: CRMState, ui: UIState): string {
       return buildClientsView(state, ui);
     case "clientDetail":
       return buildClientDetailView(state, ui.view.id ?? "");
+    case "sellers":
+      return buildSellersView(state, ui);
+    case "sellerDetail":
+      return buildSellerDetailView(state, ui.view.id ?? "");
     case "opportunities":
       return buildOpportunitiesView(state, ui);
     case "opportunityDetail":
@@ -674,12 +844,16 @@ function buildHomeView(state: CRMState): string {
             <span class="eyebrow">Accesos rapidos</span>
             <h2>Ultimos registros</h2>
           </div>
-          <p>Atajos a clientes y oportunidades recientes.</p>
+          <p>Atajos a clientes, vendedores y oportunidades recientes.</p>
         </div>
-        <div class="summary-columns">
+        <div class="summary-columns summary-columns--three">
           <section class="summary-group">
             <h3>Clientes</h3>
             ${renderRecentClients(state)}
+          </section>
+          <section class="summary-group">
+            <h3>Vendedores</h3>
+            ${renderRecentSellers(state)}
           </section>
           <section class="summary-group">
             <h3>Oportunidades</h3>
@@ -698,9 +872,9 @@ function buildClientsView(state: CRMState, ui: UIState): string {
         <div class="section-heading">
           <div>
             <span class="eyebrow">Clientes</span>
-            <h2>Base de contactos</h2>
+            <h2>Empresas y contactos</h2>
           </div>
-          <p>Abre un cliente para editarlo y ver su historial comercial.</p>
+          <p>La empresa pasa a ser el titulo principal de cada cliente.</p>
         </div>
         <div class="toolbar toolbar--single">
           <label>
@@ -708,7 +882,7 @@ function buildClientsView(state: CRMState, ui: UIState): string {
             <input
               id="client-search"
               type="search"
-              placeholder="Nombre, empresa, email o telefono"
+              placeholder="Empresa, contacto, email o telefono"
               value="${escapeHtmlAttribute(ui.clientSearch)}"
             />
           </label>
@@ -723,7 +897,7 @@ function buildClientsView(state: CRMState, ui: UIState): string {
             <span class="eyebrow">Accion</span>
             <h2>Nuevo cliente</h2>
           </div>
-          <p>El alta queda fuera de la portada para mantener la vista principal limpia.</p>
+          <p>Contacto y empresa quedan separados desde el alta inicial.</p>
         </div>
         <button type="button" data-toggle-new-client>
           ${ui.showNewClientForm ? "Cerrar formulario" : "Crear cliente"}
@@ -732,6 +906,53 @@ function buildClientsView(state: CRMState, ui: UIState): string {
           ui.showNewClientForm
             ? buildClientForm()
             : '<p class="empty-state side-copy">Abre el formulario solo cuando necesites dar de alta un cliente.</p>'
+        }
+      </aside>
+    </section>
+  `;
+}
+
+function buildSellersView(state: CRMState, ui: UIState): string {
+  return `
+    <section class="page-grid">
+      <article class="card">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Vendedores</span>
+            <h2>Owners comerciales</h2>
+          </div>
+          <p>Cada oportunidad debe quedar asignada a un vendedor existente.</p>
+        </div>
+        <div class="toolbar toolbar--single">
+          <label>
+            Buscar vendedor
+            <input
+              id="seller-search"
+              type="search"
+              placeholder="Nombre, email o telefono"
+              value="${escapeHtmlAttribute(ui.sellerSearch)}"
+            />
+          </label>
+        </div>
+        <div class="list-stack" data-seller-list>
+          ${renderSellerList(state, ui.sellerSearch)}
+        </div>
+      </article>
+      <aside class="card side-panel">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Accion</span>
+            <h2>Nuevo vendedor</h2>
+          </div>
+          <p>Crealos primero para poder asignarlos desde oportunidades.</p>
+        </div>
+        <button type="button" data-toggle-new-seller>
+          ${ui.showNewSellerForm ? "Cerrar formulario" : "Crear vendedor"}
+        </button>
+        ${
+          ui.showNewSellerForm
+            ? buildSellerForm()
+            : '<p class="empty-state side-copy">Abre el formulario solo cuando necesites dar de alta un vendedor.</p>'
         }
       </aside>
     </section>
@@ -752,23 +973,24 @@ function buildClientDetailView(state: CRMState, clientId: string): string {
         <div class="section-heading">
           <div>
             <span class="eyebrow">Cliente</span>
-            <h2>${escapeHtml(client.name)}</h2>
+            <h2>${escapeHtml(client.company)}</h2>
+            <p class="section-heading__meta">Contacto principal: ${escapeHtml(client.name || "Sin definir")}</p>
           </div>
-          <p>Edita cualquier dato del cliente sin salir de su ficha.</p>
+          <p>Edita empresa, contacto y contexto comercial sin salir de la ficha.</p>
         </div>
         <form id="client-detail-form" class="form-grid">
           <input type="hidden" name="id" value="${client.id}" />
-          <label>
-            Nombre
-            <input name="name" type="text" value="${escapeHtmlAttribute(client.name)}" required />
-          </label>
           <label>
             Empresa
             <input name="company" type="text" value="${escapeHtmlAttribute(client.company)}" required />
           </label>
           <label>
+            Nombre de contacto
+            <input name="name" type="text" value="${escapeHtmlAttribute(client.name)}" required />
+          </label>
+          <label>
             Email
-            <input name="email" type="email" value="${escapeHtmlAttribute(client.email)}" required />
+            <input name="email" type="email" value="${escapeHtmlAttribute(client.email)}" />
           </label>
           <label>
             Telefono
@@ -781,6 +1003,15 @@ function buildClientDetailView(state: CRMState, clientId: string): string {
           <label>
             Origen
             <input name="source" type="text" value="${escapeHtmlAttribute(client.source)}" />
+          </label>
+          <label class="full">
+            Redes sociales
+            <input
+              name="socialNetworks"
+              type="text"
+              value="${escapeHtmlAttribute(client.socialNetworks)}"
+              placeholder="LinkedIn, Instagram, sitio web..."
+            />
           </label>
           <label class="full">
             Notas
@@ -804,7 +1035,69 @@ function buildClientDetailView(state: CRMState, clientId: string): string {
           ${
             related.length === 0
               ? '<p class="empty-state">Este cliente todavia no tiene oportunidades asociadas.</p>'
-              : related.map((item) => renderRelatedOpportunity(item)).join("")
+              : related.map((item) => renderRelatedOpportunity(state, item)).join("")
+          }
+        </div>
+      </aside>
+    </section>
+  `;
+}
+
+function buildSellerDetailView(state: CRMState, sellerId: string): string {
+  const seller = state.sellers.find((item) => item.id === sellerId);
+  if (!seller) {
+    return buildMissingCard("Vendedor no encontrado", "El registro ya no existe.");
+  }
+
+  const related = state.opportunities.filter((item) => item.sellerId === seller.id);
+
+  return `
+    <section class="detail-grid">
+      <article class="card detail-card">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Vendedor</span>
+            <h2>${escapeHtml(seller.name)}</h2>
+          </div>
+          <p>Gestiona el owner comercial y sus datos de contacto.</p>
+        </div>
+        <form id="seller-detail-form" class="form-grid">
+          <input type="hidden" name="id" value="${seller.id}" />
+          <label>
+            Nombre
+            <input name="name" type="text" value="${escapeHtmlAttribute(seller.name)}" required />
+          </label>
+          <label>
+            Email
+            <input name="email" type="email" value="${escapeHtmlAttribute(seller.email)}" />
+          </label>
+          <label>
+            Telefono
+            <input name="phone" type="tel" value="${escapeHtmlAttribute(seller.phone)}" />
+          </label>
+          <label class="full">
+            Notas
+            <textarea name="notes" rows="5">${escapeHtml(seller.notes)}</textarea>
+          </label>
+          <div class="form-actions full">
+            <button type="submit">Guardar cambios</button>
+            <button type="button" class="ghost-button" data-delete-seller="${seller.id}">Eliminar vendedor</button>
+          </div>
+        </form>
+      </article>
+      <aside class="card related-card">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Relacionadas</span>
+            <h2>Oportunidades asignadas</h2>
+          </div>
+          <p>${related.length} oportunidades con este vendedor como owner.</p>
+        </div>
+        <div class="list-stack">
+          ${
+            related.length === 0
+              ? '<p class="empty-state">Este vendedor todavia no tiene oportunidades asignadas.</p>'
+              : related.map((item) => renderRelatedOpportunity(state, item)).join("")
           }
         </div>
       </aside>
@@ -821,7 +1114,7 @@ function buildOpportunitiesView(state: CRMState, ui: UIState): string {
             <span class="eyebrow">Oportunidades</span>
             <h2>Pipeline comercial</h2>
           </div>
-          <p>Abre una oportunidad para editar cliente, stage, monto y notas.</p>
+          <p>Abre una oportunidad para editar cliente, vendedor, stage, monto y notas.</p>
         </div>
         <div class="toolbar">
           <label>
@@ -829,7 +1122,7 @@ function buildOpportunitiesView(state: CRMState, ui: UIState): string {
             <input
               id="opportunity-search"
               type="search"
-              placeholder="Titulo, cliente, empresa u owner"
+              placeholder="Titulo, empresa, contacto o vendedor"
               value="${escapeHtmlAttribute(ui.opportunitySearch)}"
             />
           </label>
@@ -858,9 +1151,13 @@ function buildOpportunitiesView(state: CRMState, ui: UIState): string {
             <span class="eyebrow">Accion</span>
             <h2>Nueva oportunidad</h2>
           </div>
-          <p>La carga queda en su pestaña y ya no invade la pantalla inicial.</p>
+          <p>La carga queda en su pestaña y exige un cliente y un vendedor.</p>
         </div>
-        <button type="button" data-toggle-new-opportunity ${state.clients.length === 0 ? "disabled" : ""}>
+        <button
+          type="button"
+          data-toggle-new-opportunity
+          ${state.clients.length === 0 || state.sellers.length === 0 ? "disabled" : ""}
+        >
           ${ui.showNewOpportunityForm ? "Cerrar formulario" : "Crear oportunidad"}
         </button>
         ${
@@ -869,7 +1166,9 @@ function buildOpportunitiesView(state: CRMState, ui: UIState): string {
             : `<p class="empty-state side-copy">${
                 state.clients.length === 0
                   ? "Primero necesitas al menos un cliente para crear oportunidades."
-                  : "Abre el formulario solo cuando quieras dar de alta una oportunidad."
+                  : state.sellers.length === 0
+                    ? "Primero necesitas al menos un vendedor para asignar la oportunidad."
+                    : "Abre el formulario solo cuando quieras dar de alta una oportunidad."
               }</p>`
         }
       </aside>
@@ -884,6 +1183,7 @@ function buildOpportunityDetailView(state: CRMState, opportunityId: string): str
   }
 
   const client = state.clients.find((item) => item.id === opportunity.clientId);
+  const seller = resolveSeller(state, opportunity);
 
   return `
     <section class="detail-grid">
@@ -893,7 +1193,7 @@ function buildOpportunityDetailView(state: CRMState, opportunityId: string): str
             <span class="eyebrow">Oportunidad</span>
             <h2>${escapeHtml(opportunity.title)}</h2>
           </div>
-          <p>Edita el contexto comercial y la relacion con el cliente.</p>
+          <p>Edita el contexto comercial y la relacion con cliente y vendedor.</p>
         </div>
         <form id="opportunity-detail-form" class="form-grid">
           <input type="hidden" name="id" value="${opportunity.id}" />
@@ -904,12 +1204,28 @@ function buildOpportunityDetailView(state: CRMState, opportunityId: string): str
                 .map(
                   (item) => `
                     <option value="${item.id}" ${item.id === opportunity.clientId ? "selected" : ""}>
-                      ${escapeHtml(item.name)} - ${escapeHtml(item.company)}
+                      ${escapeHtml(item.company)} - ${escapeHtml(item.name)}
                     </option>
                   `
                 )
                 .join("")}
             </select>
+          </label>
+          <label class="full">
+            Vendedor owner
+            <select name="sellerId" required>
+              <option value="">Selecciona un vendedor</option>
+              ${state.sellers
+                .map(
+                  (item) => `
+                    <option value="${item.id}" ${item.id === opportunity.sellerId ? "selected" : ""}>
+                      ${escapeHtml(item.name)}
+                    </option>
+                  `
+                )
+                .join("")}
+            </select>
+            <input type="hidden" name="owner" value="${escapeHtmlAttribute(opportunity.owner)}" />
           </label>
           <label>
             Nombre de la oportunidad
@@ -934,10 +1250,6 @@ function buildOpportunityDetailView(state: CRMState, opportunityId: string): str
             Fecha estimada de cierre
             <input name="expectedCloseDate" type="date" value="${escapeHtmlAttribute(opportunity.expectedCloseDate)}" required />
           </label>
-          <label>
-            Owner
-            <input name="owner" type="text" value="${escapeHtmlAttribute(opportunity.owner)}" required />
-          </label>
           <label class="full">
             Notas
             <textarea name="notes" rows="5">${escapeHtml(opportunity.notes)}</textarea>
@@ -952,21 +1264,34 @@ function buildOpportunityDetailView(state: CRMState, opportunityId: string): str
         <div class="section-heading">
           <div>
             <span class="eyebrow">Contexto</span>
-            <h2>Cliente vinculado</h2>
+            <h2>Relacionados</h2>
           </div>
-          <p>Acceso rapido a la ficha del cliente relacionado.</p>
+          <p>Acceso rapido a la ficha del cliente y del vendedor asignado.</p>
         </div>
-        ${
-          client
-            ? `
-              <button type="button" class="link-card" data-open-client="${client.id}">
-                <strong>${escapeHtml(client.name)}</strong>
-                <span>${escapeHtml(client.company)}</span>
-                <span>${escapeHtml(client.email)}</span>
-              </button>
-            `
-            : '<p class="empty-state">El cliente relacionado fue eliminado.</p>'
-        }
+        <div class="list-stack">
+          ${
+            client
+              ? `
+                <button type="button" class="link-card" data-open-client="${client.id}">
+                  <strong>${escapeHtml(client.company)}</strong>
+                  <span>${escapeHtml(client.name || "Sin contacto")}</span>
+                  <span>${escapeHtml(client.email || client.phone || "Sin datos de contacto")}</span>
+                </button>
+              `
+              : '<p class="empty-state">El cliente relacionado fue eliminado.</p>'
+          }
+          ${
+            seller
+              ? `
+                <button type="button" class="link-card" data-open-seller="${seller.id}">
+                  <strong>${escapeHtml(seller.name)}</strong>
+                  <span>Owner comercial</span>
+                  <span>${escapeHtml(seller.email || seller.phone || "Sin datos de contacto")}</span>
+                </button>
+              `
+              : '<p class="empty-state">El vendedor relacionado fue eliminado.</p>'
+          }
+        </div>
       </aside>
     </section>
   `;
@@ -1023,16 +1348,16 @@ function buildClientForm(): string {
   return `
     <form id="new-client-form" class="form-grid form-grid--stacked">
       <label>
-        Nombre
-        <input name="name" type="text" placeholder="Ana Perez" required />
-      </label>
-      <label>
         Empresa
         <input name="company" type="text" placeholder="Acme SA" required />
       </label>
       <label>
+        Nombre de contacto
+        <input name="name" type="text" placeholder="Ana Perez" required />
+      </label>
+      <label>
         Email
-        <input name="email" type="email" placeholder="ana@empresa.com" required />
+        <input name="email" type="email" placeholder="ana@empresa.com" />
       </label>
       <label>
         Telefono
@@ -1047,10 +1372,38 @@ function buildClientForm(): string {
         <input name="source" type="text" placeholder="Referido, web, evento..." />
       </label>
       <label class="full">
+        Redes sociales
+        <input name="socialNetworks" type="text" placeholder="LinkedIn, Instagram, sitio web..." />
+      </label>
+      <label class="full">
         Notas
         <textarea name="notes" rows="4" placeholder="Contexto, dolores, proxima accion..."></textarea>
       </label>
       <button type="submit">Guardar cliente</button>
+    </form>
+  `;
+}
+
+function buildSellerForm(): string {
+  return `
+    <form id="new-seller-form" class="form-grid form-grid--stacked">
+      <label>
+        Nombre
+        <input name="name" type="text" placeholder="Carla Gomez" required />
+      </label>
+      <label>
+        Email
+        <input name="email" type="email" placeholder="carla@empresa.com" />
+      </label>
+      <label>
+        Telefono
+        <input name="phone" type="tel" placeholder="+54 11 4444 1111" />
+      </label>
+      <label class="full">
+        Notas
+        <textarea name="notes" rows="4" placeholder="Equipo, seniority, observaciones..."></textarea>
+      </label>
+      <button type="submit">Guardar vendedor</button>
     </form>
   `;
 }
@@ -1065,10 +1418,22 @@ function buildOpportunityForm(state: CRMState): string {
           ${state.clients
             .map(
               (client) =>
-                `<option value="${client.id}">${escapeHtml(client.name)} - ${escapeHtml(client.company)}</option>`
+                `<option value="${client.id}">${escapeHtml(client.company)} - ${escapeHtml(client.name)}</option>`
             )
             .join("")}
         </select>
+      </label>
+      <label class="full">
+        Vendedor owner
+        <select name="sellerId" required>
+          <option value="">Selecciona un vendedor</option>
+          ${state.sellers
+            .map(
+              (seller) => `<option value="${seller.id}">${escapeHtml(seller.name)}</option>`
+            )
+            .join("")}
+        </select>
+        <input name="owner" type="hidden" value="" />
       </label>
       <label>
         Nombre de la oportunidad
@@ -1089,10 +1454,6 @@ function buildOpportunityForm(state: CRMState): string {
       <label>
         Fecha estimada de cierre
         <input name="expectedCloseDate" type="date" required />
-      </label>
-      <label>
-        Owner
-        <input name="owner" type="text" placeholder="Equipo ventas" required />
       </label>
       <label class="full">
         Notas
@@ -1121,7 +1482,7 @@ function renderClientList(state: CRMState, search: string): string {
   const clients = state.clients.filter((client) =>
     !search
       ? true
-      : [client.name, client.company, client.email, client.phone]
+      : [client.company, client.name, client.email, client.phone, client.socialNetworks]
           .join(" ")
           .toLowerCase()
           .includes(search)
@@ -1138,13 +1499,13 @@ function renderClientList(state: CRMState, search: string): string {
         <button type="button" class="list-item list-button" data-open-client="${client.id}">
           <div class="list-item__header">
             <div>
-              <strong>${escapeHtml(client.name)}</strong>
-              <p>${escapeHtml(client.company)} - ${escapeHtml(client.position || "Sin cargo")}</p>
+              <strong>${escapeHtml(client.company)}</strong>
+              <p>${escapeHtml(client.name || "Sin contacto")} - ${escapeHtml(client.position || "Sin cargo")}</p>
             </div>
             <span class="list-link">Abrir</span>
           </div>
           <div class="list-item__meta">
-            <span>${escapeHtml(client.email)}</span>
+            <span>${escapeHtml(client.email || "Sin email")}</span>
             <span>${escapeHtml(client.phone || "Sin telefono")}</span>
             <span>${related.length} oportunidades</span>
           </div>
@@ -1155,12 +1516,52 @@ function renderClientList(state: CRMState, search: string): string {
     .join("");
 }
 
+function renderSellerList(state: CRMState, search: string): string {
+  const sellers = state.sellers.filter((seller) =>
+    !search
+      ? true
+      : [seller.name, seller.email, seller.phone].join(" ").toLowerCase().includes(search)
+  );
+
+  if (sellers.length === 0) {
+    return '<p class="empty-state">No hay vendedores para mostrar con ese filtro.</p>';
+  }
+
+  return sellers
+    .map((seller) => {
+      const related = state.opportunities.filter((item) => item.sellerId === seller.id);
+      return `
+        <button type="button" class="list-item list-button" data-open-seller="${seller.id}">
+          <div class="list-item__header">
+            <div>
+              <strong>${escapeHtml(seller.name)}</strong>
+              <p>${related.length} oportunidades asignadas</p>
+            </div>
+            <span class="list-link">Abrir</span>
+          </div>
+          <div class="list-item__meta">
+            <span>${escapeHtml(seller.email || "Sin email")}</span>
+            <span>${escapeHtml(seller.phone || "Sin telefono")}</span>
+          </div>
+          <p>${escapeHtml(seller.notes || "Sin notas cargadas.")}</p>
+        </button>
+      `;
+    })
+    .join("");
+}
+
 function renderOpportunityList(state: CRMState, search: string, stage: string): string {
   const opportunities = state.opportunities.filter((opportunity) => {
     const client = state.clients.find((item) => item.id === opportunity.clientId);
+    const seller = resolveSeller(state, opportunity);
     const matchesSearch = !search
       ? true
-      : [opportunity.title, client?.name ?? "", client?.company ?? "", opportunity.owner]
+      : [
+          opportunity.title,
+          client?.company ?? "",
+          client?.name ?? "",
+          seller?.name ?? opportunity.owner
+        ]
           .join(" ")
           .toLowerCase()
           .includes(search);
@@ -1175,21 +1576,22 @@ function renderOpportunityList(state: CRMState, search: string, stage: string): 
   return opportunities
     .map((opportunity) => {
       const client = state.clients.find((item) => item.id === opportunity.clientId);
+      const seller = resolveSeller(state, opportunity);
       const meta = stageMeta[opportunity.stage];
       return `
         <button type="button" class="list-item list-button" data-open-opportunity="${opportunity.id}">
           <div class="list-item__header">
             <div>
               <strong>${escapeHtml(opportunity.title)}</strong>
-              <p>${escapeHtml(client?.name ?? "Cliente eliminado")} - ${escapeHtml(client?.company ?? "Sin empresa")}</p>
+              <p>${escapeHtml(client?.company ?? "Cliente eliminado")} - ${escapeHtml(client?.name ?? "Sin contacto")}</p>
             </div>
             <span class="list-link">Abrir</span>
           </div>
           <div class="list-item__meta">
             <span class="badge badge--${meta.tone}">${meta.label}</span>
             <span>${formatCurrency(opportunity.amount)}</span>
+            <span>Vendedor: ${escapeHtml((seller?.name ?? opportunity.owner) || "Sin vendedor")}</span>
             <span>Cierre: ${formatDate(opportunity.expectedCloseDate)}</span>
-            <span>Prob.: ${meta.probability}%</span>
           </div>
           <p>${escapeHtml(opportunity.notes || "Sin notas cargadas.")}</p>
         </button>
@@ -1199,13 +1601,35 @@ function renderOpportunityList(state: CRMState, search: string, stage: string): 
 }
 
 function renderRecentClients(state: CRMState): string {
+  if (state.clients.length === 0) {
+    return '<p class="empty-state">Todavia no hay clientes cargados.</p>';
+  }
+
   return state.clients
     .slice(0, 3)
     .map(
       (client) => `
         <button type="button" class="summary-link" data-open-client="${client.id}">
-          <strong>${escapeHtml(client.name)}</strong>
-          <span>${escapeHtml(client.company)}</span>
+          <strong>${escapeHtml(client.company)}</strong>
+          <span>${escapeHtml(client.name || "Sin contacto")}</span>
+        </button>
+      `
+    )
+    .join("");
+}
+
+function renderRecentSellers(state: CRMState): string {
+  if (state.sellers.length === 0) {
+    return '<p class="empty-state">Todavia no hay vendedores cargados.</p>';
+  }
+
+  return state.sellers
+    .slice(0, 3)
+    .map(
+      (seller) => `
+        <button type="button" class="summary-link" data-open-seller="${seller.id}">
+          <strong>${escapeHtml(seller.name)}</strong>
+          <span>${escapeHtml(seller.email || "Sin email")}</span>
         </button>
       `
     )
@@ -1213,6 +1637,10 @@ function renderRecentClients(state: CRMState): string {
 }
 
 function renderRecentOpportunities(state: CRMState): string {
+  if (state.opportunities.length === 0) {
+    return '<p class="empty-state">Todavia no hay oportunidades cargadas.</p>';
+  }
+
   return state.opportunities
     .slice(0, 3)
     .map(
@@ -1226,14 +1654,15 @@ function renderRecentOpportunities(state: CRMState): string {
     .join("");
 }
 
-function renderRelatedOpportunity(opportunity: Opportunity): string {
+function renderRelatedOpportunity(state: CRMState, opportunity: Opportunity): string {
   const meta = stageMeta[opportunity.stage];
+  const seller = resolveSeller(state, opportunity);
   return `
     <button type="button" class="list-item list-button" data-open-opportunity="${opportunity.id}">
       <div class="list-item__header">
         <div>
           <strong>${escapeHtml(opportunity.title)}</strong>
-          <p>Owner: ${escapeHtml(opportunity.owner)}</p>
+          <p>Vendedor: ${escapeHtml((seller?.name ?? opportunity.owner) || "Sin vendedor")}</p>
         </div>
         <span class="list-link">Abrir</span>
       </div>
@@ -1249,8 +1678,13 @@ function renderRelatedOpportunity(opportunity: Opportunity): string {
 function normalizeState(state: CRMState): CRMState {
   return {
     clients: [...state.clients].sort(sortByDateDesc),
+    sellers: [...state.sellers].sort(sortByDateDesc),
     opportunities: [...state.opportunities].sort(sortByDateDesc)
   };
+}
+
+function resolveSeller(state: CRMState, opportunity: Opportunity): Seller | undefined {
+  return state.sellers.find((item) => item.id === opportunity.sellerId);
 }
 
 function totalOpenPipeline(state: CRMState): number {

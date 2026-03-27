@@ -58,6 +58,11 @@ button {
   margin-bottom: 24px;
 }
 
+.hero--compact {
+  gap: 16px;
+  align-items: center;
+}
+
 .hero h1,
 .section-heading h2 {
   margin: 0;
@@ -69,9 +74,18 @@ button {
   max-width: 12ch;
 }
 
+.hero--compact h1 {
+  font-size: clamp(2rem, 4.8vw, 3.5rem);
+  max-width: 10ch;
+}
+
 .hero p {
   max-width: 56ch;
   color: var(--text-soft);
+}
+
+.hero--compact .hero-copy {
+  padding: 8px 0;
 }
 
 .eyebrow {
@@ -103,6 +117,12 @@ button {
   border-radius: 28px;
   padding: 28px;
   box-shadow: 0 28px 60px rgba(15, 108, 189, 0.26);
+}
+
+.hero--compact .hero-card {
+  gap: 6px;
+  min-height: 220px;
+  padding: 24px;
 }
 
 .hero-card strong {
@@ -352,8 +372,17 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.summary-columns--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .summary-group h3 {
   margin: 0 0 10px;
+}
+
+.section-heading__meta {
+  margin: 8px 0 0;
+  color: var(--text-soft);
 }
 
 .summary-link,
@@ -435,6 +464,10 @@ button:disabled {
 
   .dashboard-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .summary-columns--three {
+    grid-template-columns: 1fr;
   }
 
   .section-heading {

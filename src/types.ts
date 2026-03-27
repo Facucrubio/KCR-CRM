@@ -14,6 +14,16 @@ export interface Client {
   phone: string;
   position: string;
   source: string;
+  socialNetworks: string;
+  notes: string;
+  createdAt: string;
+}
+
+export interface Seller {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
   notes: string;
   createdAt: string;
 }
@@ -21,6 +31,7 @@ export interface Client {
 export interface Opportunity {
   id: string;
   clientId: string;
+  sellerId: string;
   title: string;
   stage: OpportunityStage;
   amount: number;
@@ -32,5 +43,6 @@ export interface Opportunity {
 
 export interface CRMState {
   clients: Client[];
+  sellers: Seller[];
   opportunities: Opportunity[];
 }
