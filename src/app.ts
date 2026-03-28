@@ -29,6 +29,7 @@ interface UIState {
   sellerSearch: string;
   opportunitySearch: string;
   opportunityStageFilter: string;
+  opportunityEventTypeFilter: string;
   showNewClientForm: boolean;
   showNewSellerForm: boolean;
   showNewOpportunityForm: boolean;
@@ -114,6 +115,7 @@ export async function createApp(root: HTMLDivElement): Promise<void> {
     sellerSearch: "",
     opportunitySearch: "",
     opportunityStageFilter: "all",
+    opportunityEventTypeFilter: "all",
     showNewClientForm: false,
     showNewSellerForm: false,
     showNewOpportunityForm: false,
@@ -462,6 +464,14 @@ function bindNavigation(
         ui.opportunityStageFilter,
         navigate
       );
+    });
+
+  root
+    .querySelector<HTMLSelectElement>("#opportunity-event-type-filter")
+    ?.addEventListener("change", (event) => {
+      setUI({
+        opportunityEventTypeFilter: (event.currentTarget as HTMLSelectElement).value
+      });
     });
 
   bindCreateForms(root, state, ui, setState, setUI, navigate);
@@ -957,7 +967,7 @@ function buildCurrentView(state: CRMState, ui: UIState): string {
     case "opportunities":
       return buildOpportunitiesView(state, ui);
     case "opportunityDetail":
-      return buildOpportunityDetailView(state, ui.view.id ?? "");
+      return buildOpportunityDetailView(state, ui, ui.view.id ?? "");
     case "home":
     default:
       return buildHomeView(state);
@@ -1318,7 +1328,7 @@ function buildOpportunitiesView(state: CRMState, ui: UIState): string {
   `;
 }
 
-function buildOpportunityDetailView(state: CRMState, opportunityId: string): string {
+function buildOpportunityDetailView(state: CRMState, ui: UIState, opportunityId: string): string {
   const opportunity = state.opportunities.find((item) => item.id === opportunityId);
   if (!opportunity) {
     return buildMissingCard("Oportunidad no encontrada", "El registro ya no existe.");
@@ -1326,7 +1336,7 @@ function buildOpportunityDetailView(state: CRMState, opportunityId: string): str
 
   const client = state.clients.find((item) => item.id === opportunity.clientId);
   const seller = resolveSeller(state, opportunity);
-  const events = getOpportunityEvents(state, opportunity.id);
+  const events = getOpportunityEvents(state, opportunity.id, ui.opportunityEventTypeFilter);
 
   return `
     <section class="detail-grid">
@@ -1444,6 +1454,20 @@ function buildOpportunityDetailView(state: CRMState, opportunityId: string): str
           <h2>Seguimiento de la oportunidad</h2>
         </div>
         <p>Registra llamadas, reuniones, correos, mensajes y cualquier otro contacto relevante.</p>
+      </div>
+      <div class="toolbar toolbar--single">
+        <label>
+          Filtrar eventos por tipo
+          <select id="opportunity-event-type-filter">
+            <option value="all" ${ui.opportunityEventTypeFilter === "all" ? "selected" : ""}>Todos</option>
+            ${Object.entries(opportunityEventTypeMeta)
+              .map(
+                ([value, meta]) =>
+                  `<option value="${value}" ${ui.opportunityEventTypeFilter === value ? "selected" : ""}>${meta.label}</option>`
+              )
+              .join("")}
+          </select>
+        </label>
       </div>
       <form id="new-opportunity-event-form" class="form-grid">
         <input type="hidden" name="opportunityId" value="${opportunity.id}" />
@@ -1934,8 +1958,16 @@ function resolveSeller(state: CRMState, opportunity: Opportunity): Seller | unde
   return state.sellers.find((item) => item.id === opportunity.sellerId);
 }
 
-function getOpportunityEvents(state: CRMState, opportunityId: string): OpportunityEvent[] {
-  return state.opportunityEvents.filter((item) => item.opportunityId === opportunityId);
+function getOpportunityEvents(
+  state: CRMState,
+  opportunityId: string,
+  typeFilter = "all"
+): OpportunityEvent[] {
+  return state.opportunityEvents.filter((item) => {
+    const matchesOpportunity = item.opportunityId === opportunityId;
+    const matchesType = typeFilter === "all" ? true : item.type === typeFilter;
+    return matchesOpportunity && matchesType;
+  });
 }
 
 function totalOpenPipeline(state: CRMState): number {
