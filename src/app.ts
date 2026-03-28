@@ -787,6 +787,62 @@ function bindDetailForms(
     });
   });
 
+  root.querySelectorAll<HTMLFormElement>("[data-event-edit-form]").forEach((eventForm) => {
+    eventForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (ui.isSaving) {
+        return;
+      }
+
+      const formData = new FormData(eventForm);
+      const eventId = readString(formData, "eventId");
+      const opportunityId = readString(formData, "opportunityId");
+      const current = state.opportunityEvents.find((item) => item.id === eventId);
+      if (!current) {
+        return;
+      }
+
+      await withMutation(setUI, async () => {
+        const { error } = await supabase
+          .from("opportunity_events")
+          .update(buildOpportunityEventPayload(formData))
+          .eq("id", eventId);
+
+        if (error) {
+          throw error;
+        }
+
+        await refreshState(setState, setUI);
+        navigate({ name: "opportunityDetail", id: opportunityId });
+      });
+    });
+  });
+
+  root.querySelectorAll<HTMLElement>("[data-delete-event]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (ui.isSaving) {
+        return;
+      }
+
+      const eventId = button.dataset.deleteEvent;
+      const opportunityId = button.dataset.opportunityId;
+      if (!eventId || !opportunityId) {
+        return;
+      }
+
+      await withMutation(setUI, async () => {
+        const { error } = await supabase.from("opportunity_events").delete().eq("id", eventId);
+
+        if (error) {
+          throw error;
+        }
+
+        await refreshState(setState, setUI);
+        navigate({ name: "opportunityDetail", id: opportunityId });
+      });
+    });
+  });
+
   root
     .querySelector<HTMLElement>("[data-delete-opportunity]")
     ?.addEventListener("click", async () => {
@@ -1803,12 +1859,41 @@ function renderOpportunityEventList(state: CRMState, events: OpportunityEvent[])
             </div>
             <span class="badge badge--${meta.tone}">${meta.label}</span>
           </div>
-          <div class="list-item__meta">
-            <span>Cliente: ${escapeHtml(client?.company ?? "Sin cliente")}</span>
-            <span>Contacto: ${escapeHtml(client?.name ?? "Sin contacto")}</span>
-            <span>Vendedor: ${escapeHtml(seller?.name ?? "Sin vendedor")}</span>
-          </div>
-          <p>${escapeHtml(eventItem.comment || "Sin comentario cargado.")}</p>
+          <form class="form-grid form-grid--event" data-event-edit-form>
+            <input type="hidden" name="eventId" value="${eventItem.id}" />
+            <input type="hidden" name="opportunityId" value="${eventItem.opportunityId}" />
+            <label>
+              Tipo de evento
+              <select name="eventType" required>
+                ${Object.entries(opportunityEventTypeMeta)
+                  .map(
+                    ([value, typeMeta]) =>
+                      `<option value="${value}" ${value === eventItem.type ? "selected" : ""}>${typeMeta.label}</option>`
+                  )
+                  .join("")}
+              </select>
+            </label>
+            <label>
+              Fecha del evento
+              <input name="eventDate" type="datetime-local" value="${escapeHtmlAttribute(formatDateTimeLocalInput(eventItem.eventDate))}" required />
+            </label>
+            <label>
+              Cliente asociado
+              <input type="text" value="${escapeHtmlAttribute(client ? `${client.company} - ${client.name}` : "Cliente no disponible")}" disabled />
+            </label>
+            <label>
+              Vendedor asociado
+              <input type="text" value="${escapeHtmlAttribute(seller?.name || "Vendedor no disponible")}" disabled />
+            </label>
+            <label class="full">
+              Comentario
+              <textarea name="comment" rows="4" placeholder="Resumen, acuerdos, proximos pasos o contexto del evento...">${escapeHtml(eventItem.comment)}</textarea>
+            </label>
+            <div class="form-actions full">
+              <button type="submit">Guardar evento</button>
+              <button type="button" class="ghost-button" data-delete-event="${eventItem.id}" data-opportunity-id="${eventItem.opportunityId}">Eliminar evento</button>
+            </div>
+          </form>
         </article>
       `;
     })
