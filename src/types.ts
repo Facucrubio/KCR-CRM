@@ -6,6 +6,8 @@ export type OpportunityStage =
   | "won"
   | "lost";
 
+export type OpportunityEventType = "call" | "meeting" | "email" | "message" | "other";
+
 export interface Client {
   id: string;
   name: string;
@@ -41,8 +43,20 @@ export interface Opportunity {
   createdAt: string;
 }
 
+export interface OpportunityEvent {
+  id: string;
+  opportunityId: string;
+  clientId: string;
+  sellerId: string;
+  type: OpportunityEventType;
+  eventDate: string;
+  comment: string;
+  createdAt: string;
+}
+
 export interface CRMState {
   clients: Client[];
   sellers: Seller[];
   opportunities: Opportunity[];
+  opportunityEvents: OpportunityEvent[];
 }

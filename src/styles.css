@@ -303,6 +303,11 @@ button:disabled {
   display: grid;
 }
 
+.list-stack--spaced {
+  gap: 12px;
+  margin-top: 18px;
+}
+
 .list-button,
 .summary-link,
 .link-card {
@@ -326,6 +331,13 @@ button:disabled {
 .list-item p {
   margin: 10px 0 0;
   color: var(--text-soft);
+}
+
+.event-card {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(23, 32, 51, 0.08);
+  border-radius: 18px;
+  padding: 18px;
 }
 
 .list-item__header,

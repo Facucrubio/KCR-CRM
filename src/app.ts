@@ -3,6 +3,8 @@ import type {
   CRMState,
   Client,
   Opportunity,
+  OpportunityEvent,
+  OpportunityEventType,
   OpportunityStage,
   Seller
 } from "./types";
@@ -70,6 +72,17 @@ interface OpportunityRow {
   created_at: string;
 }
 
+interface OpportunityEventRow {
+  id: string;
+  opportunity_id: string;
+  client_id: string;
+  seller_id: string | null;
+  event_type: OpportunityEventType;
+  event_date: string;
+  comment: string | null;
+  created_at: string;
+}
+
 const stageMeta: Record<
   OpportunityStage,
   { label: string; tone: string; probability: number }
@@ -82,8 +95,19 @@ const stageMeta: Record<
   lost: { label: "Perdida", tone: "red", probability: 0 }
 };
 
+const opportunityEventTypeMeta: Record<
+  OpportunityEventType,
+  { label: string; tone: string }
+> = {
+  call: { label: "Llamada", tone: "blue" },
+  meeting: { label: "Reunion", tone: "amber" },
+  email: { label: "Correo", tone: "slate" },
+  message: { label: "Mensaje", tone: "green" },
+  other: { label: "Otro", tone: "violet" }
+};
+
 export async function createApp(root: HTMLDivElement): Promise<void> {
-  let state: CRMState = { clients: [], sellers: [], opportunities: [] };
+  let state: CRMState = { clients: [], sellers: [], opportunities: [], opportunityEvents: [] };
   let ui: UIState = {
     view: { name: "home" },
     clientSearch: "",
@@ -138,13 +162,18 @@ export async function createApp(root: HTMLDivElement): Promise<void> {
 }
 
 async function fetchState(): Promise<CRMState> {
-  const [clientsResult, sellersResult, opportunitiesResult] = await Promise.all([
+  const [clientsResult, sellersResult, opportunitiesResult, opportunityEventsResult] =
+    await Promise.all([
     supabase.from("clients").select("*").order("created_at", { ascending: false }),
     supabase.from("sellers").select("*").order("created_at", { ascending: false }),
     supabase
       .from("opportunities")
       .select("*")
-      .order("created_at", { ascending: false })
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("opportunity_events")
+      .select("*")
+      .order("event_date", { ascending: false })
   ]);
 
   if (clientsResult.error) {
@@ -159,10 +188,15 @@ async function fetchState(): Promise<CRMState> {
     throw opportunitiesResult.error;
   }
 
+  if (opportunityEventsResult.error) {
+    throw opportunityEventsResult.error;
+  }
+
   return normalizeState({
     clients: (clientsResult.data ?? []).map(mapClientRow),
     sellers: (sellersResult.data ?? []).map(mapSellerRow),
-    opportunities: (opportunitiesResult.data ?? []).map(mapOpportunityRow)
+    opportunities: (opportunitiesResult.data ?? []).map(mapOpportunityRow),
+    opportunityEvents: (opportunityEventsResult.data ?? []).map(mapOpportunityEventRow)
   });
 }
 
@@ -250,6 +284,19 @@ function mapOpportunityRow(row: OpportunityRow): Opportunity {
   };
 }
 
+function mapOpportunityEventRow(row: OpportunityEventRow): OpportunityEvent {
+  return {
+    id: row.id,
+    opportunityId: row.opportunity_id,
+    clientId: row.client_id,
+    sellerId: row.seller_id ?? "",
+    type: row.event_type,
+    eventDate: row.event_date,
+    comment: row.comment ?? "",
+    createdAt: row.created_at
+  };
+}
+
 function formatError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -297,6 +344,15 @@ function buildOpportunityPayload(formData: FormData, sellers: Seller[]) {
     expected_close_date: toNullable(readString(formData, "expectedCloseDate")),
     owner: seller?.name ?? readString(formData, "owner"),
     notes: toNullable(readString(formData, "notes"))
+  };
+}
+
+function buildOpportunityEventPayload(formData: FormData) {
+  return {
+    opportunity_id: readString(formData, "opportunityId"),
+    event_type: readOpportunityEventType(formData, "eventType"),
+    event_date: readDateTime(formData, "eventDate"),
+    comment: toNullable(readString(formData, "comment"))
   };
 }
 
@@ -691,6 +747,36 @@ function bindDetailForms(
         .from("opportunities")
         .update(buildOpportunityPayload(formData, state.sellers))
         .eq("id", opportunityId);
+
+      if (error) {
+        throw error;
+      }
+
+      await refreshState(setState, setUI);
+      navigate({ name: "opportunityDetail", id: opportunityId });
+    });
+  });
+
+  const opportunityEventForm = root.querySelector<HTMLFormElement>(
+    "#new-opportunity-event-form"
+  );
+  opportunityEventForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (ui.isSaving) {
+      return;
+    }
+
+    const formData = new FormData(opportunityEventForm);
+    const opportunityId = readString(formData, "opportunityId");
+    const current = state.opportunities.find((item) => item.id === opportunityId);
+    if (!current) {
+      return;
+    }
+
+    await withMutation(setUI, async () => {
+      const { error } = await supabase
+        .from("opportunity_events")
+        .insert(buildOpportunityEventPayload(formData));
 
       if (error) {
         throw error;
@@ -1184,6 +1270,7 @@ function buildOpportunityDetailView(state: CRMState, opportunityId: string): str
 
   const client = state.clients.find((item) => item.id === opportunity.clientId);
   const seller = resolveSeller(state, opportunity);
+  const events = getOpportunityEvents(state, opportunity.id);
 
   return `
     <section class="detail-grid">
@@ -1293,6 +1380,48 @@ function buildOpportunityDetailView(state: CRMState, opportunityId: string): str
           }
         </div>
       </aside>
+    </section>
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Eventos</span>
+          <h2>Seguimiento de la oportunidad</h2>
+        </div>
+        <p>Registra llamadas, reuniones, correos, mensajes y cualquier otro contacto relevante.</p>
+      </div>
+      <form id="new-opportunity-event-form" class="form-grid">
+        <input type="hidden" name="opportunityId" value="${opportunity.id}" />
+        <label>
+          Tipo de evento
+          <select name="eventType" required>
+            ${Object.entries(opportunityEventTypeMeta)
+              .map(([value, meta]) => `<option value="${value}">${meta.label}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label>
+          Fecha del evento
+          <input name="eventDate" type="datetime-local" value="${escapeHtmlAttribute(formatDateTimeLocalInput(new Date().toISOString()))}" required />
+        </label>
+        <label>
+          Cliente asociado
+          <input type="text" value="${escapeHtmlAttribute(client ? `${client.company} - ${client.name}` : "Cliente no disponible")}" disabled />
+        </label>
+        <label>
+          Vendedor asociado
+          <input type="text" value="${escapeHtmlAttribute(seller?.name || opportunity.owner || "Vendedor no disponible")}" disabled />
+        </label>
+        <label class="full">
+          Comentario
+          <textarea name="comment" rows="4" placeholder="Resumen, acuerdos, proximos pasos o contexto del evento..."></textarea>
+        </label>
+        <div class="form-actions full">
+          <button type="submit">Registrar evento</button>
+        </div>
+      </form>
+      <div class="list-stack list-stack--spaced">
+        ${renderOpportunityEventList(state, events)}
+      </div>
     </section>
   `;
 }
@@ -1654,6 +1783,38 @@ function renderRecentOpportunities(state: CRMState): string {
     .join("");
 }
 
+function renderOpportunityEventList(state: CRMState, events: OpportunityEvent[]): string {
+  if (events.length === 0) {
+    return '<p class="empty-state">Todavia no hay eventos registrados para esta oportunidad.</p>';
+  }
+
+  return events
+    .map((eventItem) => {
+      const client = state.clients.find((item) => item.id === eventItem.clientId);
+      const seller = state.sellers.find((item) => item.id === eventItem.sellerId);
+      const meta = opportunityEventTypeMeta[eventItem.type];
+
+      return `
+        <article class="list-item event-card">
+          <div class="list-item__header">
+            <div>
+              <strong>${meta.label}</strong>
+              <p>${formatDateTime(eventItem.eventDate)}</p>
+            </div>
+            <span class="badge badge--${meta.tone}">${meta.label}</span>
+          </div>
+          <div class="list-item__meta">
+            <span>Cliente: ${escapeHtml(client?.company ?? "Sin cliente")}</span>
+            <span>Contacto: ${escapeHtml(client?.name ?? "Sin contacto")}</span>
+            <span>Vendedor: ${escapeHtml(seller?.name ?? "Sin vendedor")}</span>
+          </div>
+          <p>${escapeHtml(eventItem.comment || "Sin comentario cargado.")}</p>
+        </article>
+      `;
+    })
+    .join("");
+}
+
 function renderRelatedOpportunity(state: CRMState, opportunity: Opportunity): string {
   const meta = stageMeta[opportunity.stage];
   const seller = resolveSeller(state, opportunity);
@@ -1679,12 +1840,17 @@ function normalizeState(state: CRMState): CRMState {
   return {
     clients: [...state.clients].sort(sortByDateDesc),
     sellers: [...state.sellers].sort(sortByDateDesc),
-    opportunities: [...state.opportunities].sort(sortByDateDesc)
+    opportunities: [...state.opportunities].sort(sortByDateDesc),
+    opportunityEvents: [...state.opportunityEvents].sort(sortByEventDateDesc)
   };
 }
 
 function resolveSeller(state: CRMState, opportunity: Opportunity): Seller | undefined {
   return state.sellers.find((item) => item.id === opportunity.sellerId);
+}
+
+function getOpportunityEvents(state: CRMState, opportunityId: string): OpportunityEvent[] {
+  return state.opportunityEvents.filter((item) => item.opportunityId === opportunityId);
 }
 
 function totalOpenPipeline(state: CRMState): number {
@@ -1703,6 +1869,10 @@ function sortByDateDesc<T extends { createdAt: string }>(a: T, b: T): number {
   return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
 }
 
+function sortByEventDateDesc(a: OpportunityEvent, b: OpportunityEvent): number {
+  return new Date(b.eventDate).getTime() - new Date(a.eventDate).getTime();
+}
+
 function readString(formData: FormData, key: string): string {
   return String(formData.get(key) ?? "").trim();
 }
@@ -1715,6 +1885,16 @@ function readNumber(formData: FormData, key: string): number {
 function readStage(formData: FormData, key: string): OpportunityStage {
   const value = readString(formData, key);
   return value in stageMeta ? (value as OpportunityStage) : "lead";
+}
+
+function readOpportunityEventType(formData: FormData, key: string): OpportunityEventType {
+  const value = readString(formData, key);
+  return value in opportunityEventTypeMeta ? (value as OpportunityEventType) : "other";
+}
+
+function readDateTime(formData: FormData, key: string): string {
+  const value = readString(formData, key);
+  return value ? new Date(value).toISOString() : "";
 }
 
 function escapeHtml(value: string): string {
@@ -1744,4 +1924,25 @@ function formatDate(value: string): string {
   }
 
   return new Intl.DateTimeFormat("es-AR").format(new Date(value));
+}
+
+function formatDateTime(value: string): string {
+  if (!value) {
+    return "Sin fecha";
+  }
+
+  return new Intl.DateTimeFormat("es-AR", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+function formatDateTimeLocalInput(value: string): string {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  const timezoneOffset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - timezoneOffset).toISOString().slice(0, 16);
 }
